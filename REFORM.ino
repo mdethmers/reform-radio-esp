@@ -13,22 +13,30 @@
 #define I2S_LRC 15
 #define I2S_DOUT 22
 
+// Built-in LED
+#define LED_PIN 2
+
 URLStream url("ssid","password");
 A2DPStream a2dp;  // Bluetooth receiver (RX mode)
 I2SStream i2s;    // DAC output
+VolumeStream volume_out(i2s); // Volume control wrapper
 MP3DecoderHelix codec;
 
 // Source mode: true = Bluetooth from phone, false = Internet radio
 bool useBluetoothInput = false;
 
-EncodedAudioStream dec(&i2s, &codec); // For internet radio decoding
-StreamCopy copier_radio(dec, url);    // Internet radio -> decoder -> DAC
-StreamCopy copier_bt(i2s, a2dp);      // Bluetooth -> DAC
+EncodedAudioStream dec(&volume_out, &codec); // For internet radio decoding
+StreamCopy copier_radio(dec, url);           // Internet radio -> decoder -> volume -> DAC
+StreamCopy copier_bt(volume_out, a2dp);      // Bluetooth -> volume -> DAC
 
 // Volume control
 int volume = 50; // 0-100
 int lastCLK;
 unsigned long lastButtonPress = 0;
+
+// LED control
+unsigned long lastLedToggle = 0;
+bool ledState = false;
 
 void IRAM_ATTR encoderISR() {
   int clkState = digitalRead(ENCODER_CLK);
@@ -43,8 +51,8 @@ void IRAM_ATTR encoderISR() {
     Serial.print("Volume: ");
     Serial.println(volume);
     
-    // Apply volume to DAC
-    i2s.setVolume(volume / 100.0);
+    // Apply volume (0.0 to 1.0)
+    volume_out.setVolume(volume / 100.0);
   }
   lastCLK = clkState;
 }
@@ -57,6 +65,13 @@ void IRAM_ATTR buttonISR() {
     
     Serial.print("Switched to: ");
     Serial.println(useBluetoothInput ? "Bluetooth Input" : "Internet Radio");
+    
+    // Update LED state
+    if (useBluetoothInput) {
+      ledState = false; // Will start flashing in loop
+    } else {
+      digitalWrite(LED_PIN, HIGH); // Solid on for radio
+    }
     
     // Switch input source
     if (useBluetoothInput) {
@@ -83,6 +98,10 @@ void setup(){
   Serial.begin(115200);
   AudioToolsLogger.begin(Serial, AudioToolsLogLevel::Info);
 
+  // Setup LED
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH); // Start solid (radio mode)
+
   // Setup rotary encoder
   pinMode(ENCODER_CLK, INPUT_PULLUP);
   pinMode(ENCODER_DT, INPUT_PULLUP);
@@ -101,7 +120,10 @@ void setup(){
   i2s_cfg.bits_per_sample = 16;
   i2s_cfg.channels = 2;
   i2s.begin(i2s_cfg);
-  i2s.setVolume(volume / 100.0);
+  
+  // Setup volume control
+  volume_out.begin(i2s_cfg);
+  volume_out.setVolume(volume / 100.0);
 
   // Start with Internet Radio mode
   dec.begin();
@@ -113,10 +135,18 @@ void setup(){
 }
 
 void loop(){
+  // Handle LED indicator
   if (useBluetoothInput) {
+    // Flash LED in Bluetooth mode (500ms interval)
+    if (millis() - lastLedToggle > 500) {
+      ledState = !ledState;
+      digitalWrite(LED_PIN, ledState ? HIGH : LOW);
+      lastLedToggle = millis();
+    }
     // Stream Bluetooth audio from phone to DAC
     copier_bt.copy();
   } else {
+    // LED stays solid in radio mode (already set in buttonISR)
     // Stream internet radio to DAC
     copier_radio.copy();
   }
