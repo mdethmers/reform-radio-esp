@@ -16,7 +16,7 @@
 // Built-in LED
 #define LED_PIN 2
 
-URLStream url("ssid","password");
+URLStream url("Klein Domus","Boedelbak45");
 A2DPStream a2dp;  // Bluetooth receiver (RX mode)
 I2SStream i2s;    // DAC output
 VolumeStream volume_out(i2s); // Volume control wrapper
@@ -30,9 +30,13 @@ StreamCopy copier_radio(dec, url);           // Internet radio -> decoder -> vol
 StreamCopy copier_bt(volume_out, a2dp);      // Bluetooth -> volume -> DAC
 
 // Volume control
-int volume = 50; // 0-100
+volatile int volume = 50; // 0-100
+volatile bool volumeChanged = false;
 int lastCLK;
 unsigned long lastButtonPress = 0;
+
+// Mode switching
+volatile bool modeChangeRequested = false;
 
 // LED control
 unsigned long lastLedToggle = 0;
@@ -48,11 +52,7 @@ void IRAM_ATTR encoderISR() {
     } else {
       volume = max(0, volume - 5);
     }
-    Serial.print("Volume: ");
-    Serial.println(volume);
-    
-    // Apply volume (0.0 to 1.0)
-    volume_out.setVolume(volume / 100.0);
+    volumeChanged = true; // Set flag to update in main loop
   }
   lastCLK = clkState;
 }
@@ -60,37 +60,8 @@ void IRAM_ATTR encoderISR() {
 void IRAM_ATTR buttonISR() {
   unsigned long currentTime = millis();
   if (currentTime - lastButtonPress > 300) { // Debounce
-    useBluetoothInput = !useBluetoothInput;
+    modeChangeRequested = true;
     lastButtonPress = currentTime;
-    
-    Serial.print("Switched to: ");
-    Serial.println(useBluetoothInput ? "Bluetooth Input" : "Internet Radio");
-    
-    // Update LED state
-    if (useBluetoothInput) {
-      ledState = false; // Will start flashing in loop
-    } else {
-      digitalWrite(LED_PIN, HIGH); // Solid on for radio
-    }
-    
-    // Switch input source
-    if (useBluetoothInput) {
-      // Stop internet radio
-      url.end();
-      dec.end();
-      
-      // Start Bluetooth receiver
-      auto a2dp_cfg = a2dp.defaultConfig(RX_MODE);
-      a2dp_cfg.name = "Arduino Speaker";
-      a2dp.begin(a2dp_cfg);
-    } else {
-      // Stop Bluetooth
-      a2dp.end();
-      
-      // Start internet radio
-      dec.begin();
-      url.begin("http://stream.srg-ssr.ch/m/rsj/mp3_128","audio/mp3");
-    }
   }
 }
 
@@ -134,7 +105,54 @@ void setup(){
   Serial.println("Click encoder: switch Bluetooth/Radio");
 }
 
+void switchMode() {
+  useBluetoothInput = !useBluetoothInput;
+  
+  Serial.print("Switched to: ");
+  Serial.println(useBluetoothInput ? "Bluetooth Input" : "Internet Radio");
+  
+  // Update LED state
+  if (useBluetoothInput) {
+    ledState = false; // Will start flashing in loop
+  } else {
+    digitalWrite(LED_PIN, HIGH); // Solid on for radio
+  }
+  
+  // Switch input source
+  if (useBluetoothInput) {
+    // Stop internet radio
+    url.end();
+    dec.end();
+    
+    // Start Bluetooth receiver
+    auto a2dp_cfg = a2dp.defaultConfig(RX_MODE);
+    a2dp_cfg.name = "Arduino Speaker";
+    a2dp.begin(a2dp_cfg);
+  } else {
+    // Stop Bluetooth
+    a2dp.end();
+    
+    // Start internet radio
+    dec.begin();
+    url.begin("http://stream.srg-ssr.ch/m/rsj/mp3_128","audio/mp3");
+  }
+}
+
 void loop(){
+  // Handle mode change from button ISR
+  if (modeChangeRequested) {
+    modeChangeRequested = false;
+    switchMode();
+  }
+  
+  // Handle volume changes from ISR
+  if (volumeChanged) {
+    volumeChanged = false;
+    volume_out.setVolume(volume / 100.0);
+    Serial.print("Volume: ");
+    Serial.println(volume);
+  }
+  
   // Handle LED indicator
   if (useBluetoothInput) {
     // Flash LED in Bluetooth mode (500ms interval)
@@ -146,7 +164,7 @@ void loop(){
     // Stream Bluetooth audio from phone to DAC
     copier_bt.copy();
   } else {
-    // LED stays solid in radio mode (already set in buttonISR)
+    // LED stays solid in radio mode
     // Stream internet radio to DAC
     copier_radio.copy();
   }
